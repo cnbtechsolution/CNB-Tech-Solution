@@ -3725,6 +3725,34 @@ def admin_login():
             session['admin_id']=admin['id']; session['admin_email']=admin['email']; session['admin_perfil']=admin['perfil']; registrar_atividade('Login administrativo'); return redirect(url_for('admin_dashboard'))
         erro='E-mail ou senha inválidos.'
     return render_template_string("""<!doctype html><html><head><meta charset='utf-8'><title>Login CNB Tech</title>{{css|safe}}</head><body><main class='wrap'><div class='form-card' style='margin:80px auto'><h1>⚡ CNB TECH SOLUTION</h1><p class='muted'>Acesso administrativo</p>{% if erro %}<div class='alerta'>{{erro}}</div>{% endif %}<form method='post'><label>E-mail</label><input class='campo' type='email' name='email' required><label>Senha</label><input class='campo' type='password' name='senha' required><button class='btn'>Entrar</button></form><p class='muted' style='margin-top:18px'>Primeiro acesso local: admin@cnbtech.local / CNBTech@2026</p></div></main></body></html>""",css=admin_css_atual(),erro=erro)
+@app.route('/admin/diagnostico')
+def admin_diagnostico():
+    token_recebido = request.args.get('token', '')
+    token_correto = os.environ.get('DIAG_TOKEN', '')
+
+    # Bloqueia acesso sem a chave correta
+    if not token_correto or token_recebido != token_correto:
+        abort(403)
+
+    with conectar_banco() as conexao:
+        admins = conexao.execute(
+            "SELECT id, nome, email, perfil, ativo FROM administradores ORDER BY id"
+        ).fetchall()
+
+    if not admins:
+        return "Nenhum administrador cadastrado."
+
+    linhas = []
+    for admin in admins:
+        linhas.append(
+            f"ID: {admin['id']} | "
+            f"Nome: {admin['nome']} | "
+            f"Email: {admin['email']} | "
+            f"Perfil: {admin['perfil']} | "
+            f"Ativo: {admin['ativo']}"
+        )
+
+    return "<br>".join(linhas)
 
 @app.route('/admin/logout')
 def admin_logout(): session.clear(); return redirect(url_for('admin_login'))
