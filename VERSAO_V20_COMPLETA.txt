@@ -1,0 +1,4 @@
+CNB TECH SOLUTION — V20 COMPLETA FINAL
+Base consolidada: app(3).py (última V20 completa salva)
+Funções: Dashboard + Empresa + Editar Site 2.0 + uploads + Contatos/Redes + Empresas + Orçamentos + Projetos + Áreas + Equipe + Galeria + Notícias + Administradores + Login + Recuperação de senha por token.
+Identidade: CNB Tech Solution.

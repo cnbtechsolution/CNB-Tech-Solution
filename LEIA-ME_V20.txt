@@ -1,0 +1,43 @@
+CNB TECH SOLUTION - V20 | PACOTE COMPLETO
+============================================================
+
+ARQUIVO PRINCIPAL
+- CNB_Tech_Solution_V20.py
+
+ARQUIVOS DE MÍDIA QUE DEVEM FICAR NA MESMA PASTA
+- cnb-tech-logo-transparente.png
+- cnb-tech-home.mp4
+
+PASTAS DO SISTEMA
+- midia_site/galeria
+- midia_site/noticias
+- midia_site/equipe
+- anexos_orcamentos
+
+COMO RODAR PELO IDLE
+1. Extraia TODO o ZIP para uma única pasta.
+2. Abra CNB_Tech_Solution_V20.py no IDLE.
+3. Pressione F5.
+4. O navegador deve abrir automaticamente em http://127.0.0.1:5000
+
+SE O FLASK NÃO ESTIVER INSTALADO
+- Dê dois cliques em INSTALAR_DEPENDENCIAS.bat
+ou rode:
+  py -m pip install -r requirements.txt
+
+BANCO DE DADOS
+- Na primeira execução, o arquivo cnb_tech_solution.db é criado automaticamente.
+- Se você já tem dados reais da V19 e quer preservá-los, COPIE o seu
+  cnb_tech_solution.db antigo para esta pasta ANTES de rodar a V20.
+- Não coloque dois bancos com nomes diferentes: o sistema usa exatamente
+  cnb_tech_solution.db.
+
+PAINEL ADMIN
+- O Dashboard continua gerenciando mídias, equipe, galeria, notícias,
+  temas, contatos e redes sociais.
+- Se estiver iniciando com banco novo, altere a senha padrão do administrador
+  assim que entrar no painel.
+
+IMPORTANTE
+- Não separe o arquivo Python, a logo e o vídeo em pastas diferentes.
+- O pacote já está organizado para rodar a partir desta mesma pasta.
