@@ -4,7 +4,15 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    # Preserva o SQLite e os uploads entre deploys e reinicializações.
+    # ATENÇÃO: requer serviço Render compatível com disco persistente.
+    disk:
+      name: cnbtech-data
+      mountPath: /var/data
+      sizeGB: 5
     envVars:
+      - key: DATA_DIR
+        value: /var/data
       - key: SECRET_KEY
         generateValue: true
       - key: ADMIN_EMAIL
