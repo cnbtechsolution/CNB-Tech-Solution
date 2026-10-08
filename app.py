@@ -93,6 +93,10 @@ else:
     app.secret_key = secrets.token_urlsafe(48)
     print("[!] AVISO: SECRET_KEY não configurada. Defina essa variável no Render.")
 
+# URLs públicas de mídias originais no Supabase; valores podem ser definidos no Render.
+SUPABASE_LOGO_URL = os.environ.get("SUPABASE_LOGO_URL", "https://kqcszhldocjavmcsbndz.supabase.co/storage/v1/object/public/cnb-site-midia/logo/ChatGPT%20Image%2022_09_2026,%2009_00_35.png").strip()
+SUPABASE_VIDEO_URL = os.environ.get("SUPABASE_VIDEO_URL", "https://kqcszhldocjavmcsbndz.supabase.co/storage/v1/object/public/cnb-site-midia/logo/video/Professionals_working_on_laptops_1080p_20260921235037.mp4").strip()
+
 # Banco SQLite: localmente fica junto do projeto; no Render pode usar DATA_DIR.
 BANCO_DADOS = STORAGE_DIR / "cnb_tech_solution.db"
 
@@ -2892,6 +2896,10 @@ def logo_cnb():
             resposta.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             return resposta
 
+    # Usa a logo original no Supabase sem renomear o arquivo.
+    if SUPABASE_LOGO_URL.startswith("https://"):
+        return redirect(SUPABASE_LOGO_URL, code=302)
+
     # Fallback: logo que acompanha o projeto.
     if not LOGO_CNB_ARQUIVO.exists():
         abort(404, description="Logo CNB Tech Solution não encontrada.")
@@ -2913,6 +2921,10 @@ def video_home():
             resposta = send_from_directory(PASTA_MIDIA_SITE, nome_configurado, mimetype="video/mp4", conditional=True, max_age=0)
             resposta.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             return resposta
+
+    # Usa o vídeo de fundo original no Supabase, preservando nome e caminho.
+    if SUPABASE_VIDEO_URL.startswith("https://"):
+        return redirect(SUPABASE_VIDEO_URL, code=302)
 
     # Fallback: vídeo original ao lado do Python.
     if not VIDEO_HOME_ARQUIVO.exists():
