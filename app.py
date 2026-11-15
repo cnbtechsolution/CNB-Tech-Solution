@@ -20,7 +20,7 @@
 # Bibliotecas usadas pelo servidor, banco de dados, login, arquivos e e-mail.
 import webbrowser
 from threading import Timer
-from flask import Flask, render_template_string, request, redirect, url_for, session, flash, send_from_directory, abort, send_file
+from flask import Flask, render_template_string, request, redirect, url_for, session, flash, send_from_directory, abort, send_file, make_response
 import sqlite3
 from pathlib import Path
 from functools import wraps
@@ -3015,9 +3015,16 @@ def home():
         noticias_home = conexao.execute(
             "SELECT * FROM noticias WHERE publicado=1 ORDER BY destaque DESC, id DESC LIMIT 3"
         ).fetchall()
-        produtos_home = conexao.execute(
+        produtos_home = [] if loja_pg_ativa() else conexao.execute(
             "SELECT * FROM produtos_digitais WHERE publicado=1 ORDER BY id DESC LIMIT 3"
         ).fetchall()
+    if loja_pg_ativa():
+        try:
+            produtos_home = loja_produtos_listar(publicado=True, limite=3)
+        except Exception as e:
+            # Em caso de queda do banco da loja, não derrubar a home institucional.
+            print('[CNB LOJA] catálogo indisponível na home:', type(e).__name__)
+            produtos_home = []
 
     dados = {
         "nome_empresa": "CNB TECH SOLUTION",
@@ -3508,6 +3515,8 @@ def admin_shell(titulo, conteudo):
             <a href='/admin/equipe'>Equipe / Quem Somos</a>
             <a href='/admin/galeria'>Galeria</a>
             <a href='/admin/produtos'>Produtos e Downloads</a>
+            <a href='/admin/vendas-pix'>Vendas Pix</a>
+            <a href='/admin/integracoes-apis'>Integrações APIs</a>
             <a href='/admin/noticias'>Notícias</a>
             <a href='/admin/administradores'>Administradores</a>
             <a href='/' target='_blank' rel='noopener noreferrer'>Ver site</a>
@@ -5492,14 +5501,25 @@ footer{border-top:1px solid var(--borda);padding:25px;text-align:center;color:va
   <h1>{{produto.nome}}</h1><p class="lead">{{produto.resumo}}</p>
   <p class="desc">{{produto.descricao}}</p><div class="price">{{preco}}</div>
   <div class="actions">
-  {% if produto.distribuicao == 'gratuito' and produto.instalador %}<a class="btn" href="{{url_for('download_gratuito_produto',produto_id=produto.id)}}">Baixar gratuitamente</a>{% else %}
+  {% if produto.distribuicao == 'gratuito' and produto.instalador %}<a class="btn" href="{{url_for('download_gratuito_produto',produto_id=produto.id)}}">Baixar gratuitamente</a>{% elif not loja_pix %}
   <a class="btn" href="{{whatsapp}}" target="_blank" rel="noopener noreferrer">Solicitar licença</a>{% endif %}
   <a class="btn secondary" href="/produtos">Ver outros produtos</a></div>
-  <p class="note">Vendas e licenças comerciais são confirmadas pela equipe CNB Tech Solution. Não existe pagamento automático nesta etapa.</p>
+  {% if loja_pix %}
+  <form method="post" action="{{url_for('loja_comprar_pix',produto_id=produto.id)}}" style="margin-top:20px;border-top:1px solid var(--borda);padding-top:14px">
+    <h2>Comprar com Pix e baixar pelo Google Drive</h2>
+    <p class="note">Informe o nome, e-mail da conta Google e CPF para gerar seu QR Code Pix. Após a aprovação, o acesso é liberado para esse e-mail.</p>
+    <input type="hidden" name="csrf_token" value="{{csrf}}">
+    <label>Nome</label><input required name="nome" maxlength="120" autocomplete="name" style="width:100%;padding:12px;margin:5px 0 12px;background:var(--f);color:var(--title);border:1px solid var(--borda);border-radius:8px">
+    <label>E-mail da sua conta Google</label><input required type="email" name="email" maxlength="160" autocomplete="email" style="width:100%;padding:12px;margin:5px 0 12px;background:var(--f);color:var(--title);border:1px solid var(--borda);border-radius:8px">
+    <label>CPF (necessário para o Pix)</label><input required name="cpf" inputmode="numeric" maxlength="14" placeholder="Somente números" style="width:100%;padding:12px;margin:5px 0 15px;background:var(--f);color:var(--title);border:1px solid var(--borda);border-radius:8px">
+    <button class="btn" type="submit" style="cursor:pointer">Gerar QR Code Pix</button>
+    <p class="note">O CPF é enviado ao processador de pagamento e não é armazenado no histórico da CNB. O instalador exige acesso à conta Google informada.</p>
+  </form>
+  {% else %}<p class="note">Para este produto, consulte disponibilidade e condições comerciais com nossa equipe.</p>{% endif %}
   </div></div>
 {% else %}
 <div class="eyebrow">Soluções digitais desenvolvidas pela CNB Tech</div>
-<h1>Produtos e softwares</h1><p class="lead">Encontre soluções para gestão financeira, educação, comunicação e tecnologia. Consulte a disponibilidade das licenças diretamente com nossa equipe.</p>
+<h1>Produtos e softwares</h1><p class="lead">Encontre soluções para gestão financeira, educação, comunicação e tecnologia. Adquira licenças disponíveis com Pix ou consulte nossa equipe.</p>
 {% if produtos %}<div class="grid">{% for p in produtos %}<article class="product">
 {% if p.imagem %}<img class="thumb" src="{{url_for('imagem_produto',produto_id=p.id)}}" alt="{{p.nome}}" loading="lazy">{% else %}<div class="thumb placeholder">CNB TECH SOFTWARE</div>{% endif %}
 <div class="content"><span class="meta">{{p.plataforma}} {% if p.versao %}• {{p.versao}}{% endif %}</span><h2>{{p.nome}}</h2><p class="desc">{{p.resumo}}</p><div class="price">{{precos[p.id]}}</div>
@@ -5517,8 +5537,7 @@ def contexto_produtos_publico(titulo):
 
 @app.route('/produtos')
 def catalogo_produtos():
-    with conectar_banco() as c:
-        produtos = c.execute("SELECT * FROM produtos_digitais WHERE publicado=1 ORDER BY id DESC").fetchall()
+    produtos = loja_produtos_listar(publicado=True)
     return render_template_string(
         LAYOUT_PRODUTOS_CNB, **contexto_produtos_publico("Produtos e Softwares"),
         detalhe=False, produtos=produtos,
@@ -5528,8 +5547,7 @@ def catalogo_produtos():
 
 @app.route('/produtos/<int:produto_id>')
 def produto_detalhe(produto_id):
-    with conectar_banco() as c:
-        produto = c.execute("SELECT * FROM produtos_digitais WHERE id=? AND publicado=1", (produto_id,)).fetchone()
+    produto = loja_produto_get(produto_id, publicado=True)
     if produto is None:
         abort(404)
     texto = f"Olá! Tenho interesse no software {produto['nome']}, versão {produto['versao'] or 'atual'}; gostaria de saber como adquirir a licença."
@@ -5537,16 +5555,22 @@ def produto_detalhe(produto_id):
         LAYOUT_PRODUTOS_CNB, **contexto_produtos_publico(produto["nome"]),
         detalhe=True, produto=produto, preco=preco_produto_br(produto["preco_centavos"]),
         tipo_licenca=modalidade_produto(produto["licenca"]),
+        loja_pix=bool(loja_pronta_para_pix() and loja_pg_ativa() and produto.get('pix_ativo') and produto.get('drive_file_id')) if loja_pg_ativa() else False,
+        csrf=token_csrf_produtos(),
         whatsapp=f"https://wa.me/{WHATSAPP_CNB}?text={quote(texto)}"
     )
 
 
 @app.route('/produtos/<int:produto_id>/imagem')
 def imagem_produto(produto_id):
-    with conectar_banco() as c:
-        p = c.execute("SELECT imagem,publicado FROM produtos_digitais WHERE id=?", (produto_id,)).fetchone()
+    p = loja_produto_get(produto_id)
     if not p or not p["imagem"] or (not p["publicado"] and not session.get("admin_id")):
         abort(404)
+    if loja_pg_ativa():
+        url = loja_validar_capa(p["imagem"])
+        if not url:
+            abort(404)
+        return redirect(url, code=302)
     ext = extensao_arquivo(p["imagem"])
     mimetypes = {"png":"image/png", "jpg":"image/jpeg", "jpeg":"image/jpeg", "webp":"image/webp"}
     if ext not in mimetypes:
@@ -5560,6 +5584,7 @@ def imagem_produto(produto_id):
 def download_gratuito_produto(produto_id):
     # Download público SOMENTE quando o administrador marcar GRATUITO.
     # Produtos comerciais nunca passam por esta rota.
+    if loja_pg_ativa(): abort(404)
     with conectar_banco() as c:
         p = c.execute("SELECT * FROM produtos_digitais WHERE id=? AND publicado=1 AND distribuicao='gratuito'", (produto_id,)).fetchone()
     if not p or not p["instalador"]:
@@ -5578,6 +5603,7 @@ def download_gratuito_produto(produto_id):
 @login_obrigatorio
 def admin_download_produto(produto_id):
     # Downloads comerciais são SOMENTE para administrador autenticado.
+    if loja_pg_ativa(): abort(404)
     with conectar_banco() as c:
         p = c.execute("SELECT * FROM produtos_digitais WHERE id=?", (produto_id,)).fetchone()
     if not p or not p["instalador"]:
@@ -5607,6 +5633,14 @@ FORMULARIO_PRODUTO_CNB = """
 <div><label>Plataforma</label><select class="campo" name="plataforma">{% for p in plataformas %}<option value="{{p}}" {% if produto and produto.plataforma==p %}selected{% endif %}>{{p}}</option>{% endfor %}</select></div></div>
 <div class="detalhe-grid"><div><label>Modalidade comercial</label><select class="campo" name="licenca">{% for chave,rotulo in licencas.items() %}<option value="{{chave}}" {% if produto and produto.licenca==chave %}selected{% endif %}>{{rotulo}}</option>{% endfor %}</select></div>
 <div><label>Preço em R$ (opcional)</label><input class="campo" name="preco" inputmode="decimal" placeholder="Ex.: 299,90" value="{{valor_preco}}"></div></div>
+{% if postgres %}
+<label>URL pública da imagem de capa (HTTPS)</label>
+<input class="campo" type="url" name="imagem_url" placeholder="https://..." value="{{produto.imagem if produto else ''}}">
+<label>ID do arquivo privado no Google Drive (ou link /file/d/ID/view)</label>
+<input class="campo" name="drive_file_id" placeholder="1AbC..." value="{{produto.drive_file_id if produto else ''}}">
+<label class="switch-admin"><input type="checkbox" name="pix_ativo" value="1" {% if produto and produto.pix_ativo %}checked{% endif %}> Habilitar pagamento Pix e entrega automática</label>
+<p class="nota-admin">O arquivo deve permanecer restrito no Drive. A conta de serviço Google deve ter permissão para compartilhá-lo. Arquivos e capa ficam fora do Render.</p>
+{% else %}
 <label>Imagem de capa (PNG, JPG ou WebP — até 6 MiB)</label>
 <input class="campo" type="file" name="imagem" accept="image/png,image/jpeg,image/webp">
 {% if produto and produto.imagem %}<p class="nota-admin">Imagem atual:</p><img src="{{url_for('imagem_produto',produto_id=produto.id)}}" alt="Capa atual" style="max-width:240px;width:100%;border-radius:8px">
@@ -5621,6 +5655,7 @@ FORMULARIO_PRODUTO_CNB = """
 <option value="gratuito" {% if produto and produto.distribuicao=='gratuito' %}selected{% endif %}>Gratuito — qualquer visitante pode baixar</option>
 </select>
 <p class="nota-admin">Atenção: "Gratuito" disponibiliza o arquivo publicamente quando o produto estiver publicado. Nunca utilize esta opção para instaladores de venda sem licença.</p>
+{% endif %}
 <label class="switch-admin"><input type="checkbox" name="publicado" value="1" {% if produto and produto.publicado %}checked{% endif %}> Publicar no site e na página de produtos</label>
 <button class="btn" type="submit">{{ 'Salvar alterações' if produto else 'Cadastrar produto' }}</button>
 </form></div>
@@ -5630,24 +5665,26 @@ FORMULARIO_PRODUTO_CNB = """
 LISTAGEM_PRODUTOS_CNB = """
 <h1>Produtos e Downloads</h1>
 <p class="muted">Gerencie softwares, versões, imagens e instaladores sem editar o Python a cada novo produto. O catálogo público usa as cores do site.</p>
-{% if not disco_ok %}<div class="alerta"><strong>ATENÇÃO:</strong> o armazenamento persistente do Render não foi detectado. Cadastro e uploads estão bloqueados até configurar o Persistent Disk e DATA_DIR, para evitar perda de informações.</div>{% endif %}
+{% if postgres %}<p class="nota-admin">Catálogo no PostgreSQL externo (persistente). Instaladores no Drive privado; imagens por URL HTTPS.</p>
+{% elif not disco_ok %}<div class="alerta"><strong>ATENÇÃO:</strong> o armazenamento persistente do Render não foi detectado. Configure CNB_LOJA_DATABASE_URL para usar PostgreSQL externo ou anexe Persistent Disk.</div>{% endif %}
 <p><a class="btn" href="{{url_for('admin_produto_novo')}}">+ Novo software</a> <a class="btn btn-sec" href="{{url_for('catalogo_produtos')}}" target="_blank" rel="noopener noreferrer">Abrir catálogo público</a></p>
 <div class="bloco" style="overflow-x:auto"><table class="tabela"><thead><tr><th>Software</th><th>Versão</th><th>Preço</th><th>Publicação</th><th>Instalador</th><th>Ações</th></tr></thead><tbody>
 {% for p in produtos %}<tr><td><strong>{{p.nome}}</strong><br><small class="muted">{{p.plataforma}} · {{licencas.get(p.licenca, 'Sob consulta')}}</small></td>
 <td>{{p.versao or '—'}}</td><td>{{precos[p.id]}}</td><td>{{'Publicado' if p.publicado else 'Rascunho'}}</td>
-<td>{% if p.instalador %}{{ 'Público grátis' if p.distribuicao=='gratuito' and p.publicado else 'Protegido' }}<br><a href="{{url_for('admin_download_produto',produto_id=p.id)}}">Baixar (admin)</a>{% else %}Não enviado{% endif %}</td>
+<td>{% if postgres %}{{'Pix ativo' if p.pix_ativo else 'Pix desligado'}}<br>{{'Drive cadastrado' if p.drive_file_id else 'Sem Drive'}}{% elif p.instalador %}{{ 'Público grátis' if p.distribuicao=='gratuito' and p.publicado else 'Protegido' }}<br><a href="{{url_for('admin_download_produto',produto_id=p.id)}}">Baixar (admin)</a>{% else %}Não enviado{% endif %}</td>
 <td><a class="btn btn-sec btn-mini" href="{{url_for('admin_produto_editar',produto_id=p.id)}}">Editar</a>
 <form style="display:inline" method="post" action="{{url_for('admin_produto_excluir',produto_id=p.id)}}" onsubmit="return confirm('Excluir este produto e seus arquivos?')"><input type="hidden" name="csrf_token" value="{{csrf}}"><button type="submit" class="btn danger btn-mini">Excluir</button></form>
 {% if p.publicado %}<a class="btn btn-sec btn-mini" target="_blank" rel="noopener noreferrer" href="{{url_for('produto_detalhe',produto_id=p.id)}}">Ver</a>{% endif %}</td></tr>
 {% else %}<tr><td colspan="6">Nenhum produto cadastrado. Clique em Novo software para começar.</td></tr>{% endfor %}
 </tbody></table></div>
-<p class="nota-admin">Fase 1: catálogo e upload. Pagamento, renovação, ativação de licenças e downloads pagos por clientes ainda não estão integrados.</p>
+<p class="nota-admin">Loja Pix: pagamento automático e compartilhamento individual no Google Drive quando integrados. Ativação de licenças dentro do Windows e renovação recorrente não estão implementadas nesta versão.</p>
+<p><a class="btn btn-sec" href="/admin/vendas-pix">Consultar vendas Pix</a></p>
 """
 
 
 def tela_form_produto(produto=None):
     ctx = {
-        "produto": produto, "csrf": token_csrf_produtos(),
+        "produto": produto, "csrf": token_csrf_produtos(), "postgres": loja_pg_ativa(),
         "plataformas": ("Windows", "Web", "Android", "Multiplataforma"),
         "licencas": {"sob_consulta": "Sob consulta", "permanente": "Licença permanente", "mensal": "Assinatura mensal", "anual": "Licença anual"},
         "valor_preco": "" if not produto or produto["preco_centavos"] is None else f"{produto['preco_centavos']/100:.2f}".replace(".", ","),
@@ -5656,6 +5693,8 @@ def tela_form_produto(produto=None):
 
 
 def guardar_produto_existente(produto=None):
+    if loja_pg_ativa():
+        return loja_gravar_produto_pg(produto)
     verificar_csrf_produtos()
     if not armazenamento_produtos_ok():
         flash("Armazenamento persistente não configurado no Render. Nenhuma alteração foi salva.")
@@ -5749,13 +5788,12 @@ def guardar_produto_existente(produto=None):
 @app.route('/admin/produtos')
 @login_obrigatorio
 def admin_produtos():
-    with conectar_banco() as c:
-        produtos = c.execute("SELECT * FROM produtos_digitais ORDER BY id DESC").fetchall()
+    produtos = loja_produtos_listar()
     conteudo = render_template_string(
         LISTAGEM_PRODUTOS_CNB, produtos=produtos,
         precos={p["id"]: preco_produto_br(p["preco_centavos"]) for p in produtos},
         licencas={"sob_consulta":"Sob consulta", "permanente":"Permanente", "mensal":"Mensal", "anual":"Anual"},
-        disco_ok=armazenamento_produtos_ok(), csrf=token_csrf_produtos()
+        disco_ok=armazenamento_produtos_ok(), postgres=loja_pg_ativa(), csrf=token_csrf_produtos()
     )
     return admin_shell("Produtos e Downloads", conteudo)
 
@@ -5771,8 +5809,7 @@ def admin_produto_novo():
 @app.route('/admin/produtos/<int:produto_id>/editar', methods=['GET', 'POST'])
 @login_obrigatorio
 def admin_produto_editar(produto_id):
-    with conectar_banco() as c:
-        produto = c.execute("SELECT * FROM produtos_digitais WHERE id=?", (produto_id,)).fetchone()
+    produto = loja_produto_get(produto_id)
     if produto is None:
         abort(404)
     if request.method == 'POST':
@@ -5784,6 +5821,12 @@ def admin_produto_editar(produto_id):
 @login_obrigatorio
 def admin_produto_excluir(produto_id):
     verificar_csrf_produtos()
+    if loja_pg_ativa():
+        loja_inicializar()
+        with loja_pg_connect() as c:
+            c.execute('DELETE FROM cnb_pix_produtos WHERE id=%s',(produto_id,))
+        flash('Produto removido do catálogo persistente. Vendas anteriores foram preservadas.')
+        return redirect(url_for('admin_produtos'))
     if not armazenamento_produtos_ok():
         abort(503, description="Sem armazenamento persistente no Render.")
     with conectar_banco() as c:
@@ -5799,6 +5842,839 @@ def admin_produto_excluir(produto_id):
 
 
 
+
+# =======================================================================
+# [CNB TECH V21] LOJA PIX AUTOMÁTICA + GOOGLE DRIVE (ARQUIVO RESTRITO)
+# Requer PostgreSQL externo; NÃO usa SQLite efêmero para vendas.
+# Segredos ficam exclusivamente nas variáveis de ambiente do Render.
+# =======================================================================
+import json as _loja_json
+import uuid as _loja_uuid
+import hashlib as _loja_hashlib
+import threading as _loja_threading
+import time as _loja_time
+from decimal import Decimal as _LojaDecimal
+from urllib.parse import quote as _loja_quote
+from flask import jsonify as _loja_jsonify
+
+CNB_LOJA_DB = os.getenv('CNB_LOJA_DATABASE_URL', '').strip()
+_LOJA_INITIALIZED = False
+_LOJA_INITIALIZE_LOCK = _loja_threading.Lock()
+_LOJA_STATUS_LOCK = _loja_threading.Lock()
+_LOJA_STATUS_ULTIMA_CONSULTA = {}
+
+
+def loja_pg_ativa():
+    return bool(CNB_LOJA_DB)
+
+
+def loja_pronta_para_pix():
+    if not loja_pg_ativa():
+        return False
+    try:
+        credenciais = loja_integracao_credenciais()
+        return all(credenciais.get(k) for k in
+                   ('mercadopago_access_token', 'mercadopago_webhook_secret',
+                    'google_service_account_json'))
+    except Exception:
+        # Configuração inacessível => nunca exibir compra Pix.
+        return False
+
+
+def loja_pg_connect():
+    """Abre uma conexão que se fecha e faz commit/rollback com `with`."""
+    import psycopg
+    from psycopg.rows import dict_row
+    return psycopg.connect(CNB_LOJA_DB, connect_timeout=8, row_factory=dict_row)
+
+
+def loja_inicializar():
+    global _LOJA_INITIALIZED
+    if not loja_pg_ativa():
+        return
+    if _LOJA_INITIALIZED:
+        return
+    with _LOJA_INITIALIZE_LOCK:
+        if _LOJA_INITIALIZED:
+            return
+        with loja_pg_connect() as c:
+            c.execute('''CREATE TABLE IF NOT EXISTS cnb_pix_produtos (
+                id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                nome TEXT NOT NULL, resumo TEXT NOT NULL DEFAULT '',
+                descricao TEXT NOT NULL DEFAULT '', versao TEXT NOT NULL DEFAULT '',
+                plataforma TEXT NOT NULL DEFAULT 'Windows',
+                licenca TEXT NOT NULL DEFAULT 'permanente',
+                preco_centavos INTEGER, imagem TEXT NOT NULL DEFAULT '',
+                instalador TEXT NOT NULL DEFAULT '', instalador_original TEXT NOT NULL DEFAULT '',
+                distribuicao TEXT NOT NULL DEFAULT 'privado', publicado INTEGER NOT NULL DEFAULT 0,
+                drive_file_id TEXT NOT NULL DEFAULT '', pix_ativo INTEGER NOT NULL DEFAULT 0,
+                criado_em TEXT NOT NULL, atualizado_em TEXT NOT NULL
+            )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS cnb_pix_pedidos (
+                id TEXT PRIMARY KEY,
+                produto_id BIGINT REFERENCES cnb_pix_produtos(id) ON DELETE SET NULL,
+                produto_nome TEXT NOT NULL, drive_file_id TEXT NOT NULL,
+                cliente_nome TEXT NOT NULL, cliente_email TEXT NOT NULL,
+                preco_centavos INTEGER NOT NULL,
+                mp_payment_id TEXT UNIQUE, status TEXT NOT NULL DEFAULT 'criando',
+                drive_status TEXT NOT NULL DEFAULT 'pendente',
+                pix_qr TEXT NOT NULL DEFAULT '', pix_imagem TEXT NOT NULL DEFAULT '',
+                criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS cnb_integracoes_credenciais (
+                chave TEXT PRIMARY KEY,
+                conteudo_cifrado TEXT NOT NULL,
+                atualizado_por TEXT NOT NULL DEFAULT '',
+                atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )''')
+        _LOJA_INITIALIZED = True
+
+
+
+# ================== [CNB TECH V22] SEGREDOS PELO ADMIN ==================
+# O segredo mestre existe SOMENTE no Render, e os demais segredos são
+# cifrados em PostgreSQL. Sem PostgreSQL e Fernet não se salva nada.
+_CNB_CREDENCIAS_ENV = {
+    'mercadopago_access_token': 'MERCADOPAGO_ACCESS_TOKEN',
+    'mercadopago_public_key': 'MERCADOPAGO_PUBLIC_KEY',
+    'mercadopago_webhook_secret': 'MERCADOPAGO_WEBHOOK_SECRET',
+    'google_service_account_json': 'GOOGLE_SERVICE_ACCOUNT_JSON',
+    'loja_base_url': 'CNB_LOJA_BASE_URL',
+}
+
+
+def loja_cifrador():
+    from cryptography.fernet import Fernet
+    chave = os.getenv('CNB_INTEGRATIONS_MASTER_KEY', '').strip()
+    if not chave:
+        raise RuntimeError('Configure CNB_INTEGRATIONS_MASTER_KEY no Render.')
+    try:
+        return Fernet(chave.encode('ascii'))
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise RuntimeError('CNB_INTEGRATIONS_MASTER_KEY inválida: use uma chave Fernet.') from exc
+
+
+def loja_integracao_credenciais():
+    '''Carrega configurações atuais: PostgreSQL cifrado > variáveis do Render.
+
+    Não mantém segredos em cache, para que a troca no painel entre em vigor.
+    Nunca coloca conteúdos sigilosos na sessão ou em HTML.
+    '''
+    dados = {nome: os.getenv(env, '').strip()
+             for nome, env in _CNB_CREDENCIAS_ENV.items()}
+    if not loja_pg_ativa():
+        return dados
+    loja_inicializar()
+    with loja_pg_connect() as conn:
+        registros = conn.execute('SELECT chave,conteudo_cifrado FROM cnb_integracoes_credenciais').fetchall()
+    if registros:
+        cifrador = loja_cifrador()
+        for registro in registros:
+            nome = registro['chave']
+            if nome not in dados:
+                continue
+            try:
+                dados[nome] = cifrador.decrypt(registro['conteudo_cifrado'].encode('ascii')).decode('utf-8')
+            except Exception as exc:
+                # Falhar fechado: jamais usar silenciosamente uma chave antiga.
+                raise RuntimeError('Não é possível decifrar credenciais: confira a chave mestre.') from exc
+    return dados
+
+
+def loja_integracao_origens():
+    fontes = {nome: ('Render' if os.getenv(env, '').strip() else 'Pendente')
+              for nome, env in _CNB_CREDENCIAS_ENV.items()}
+    if loja_pg_ativa():
+        loja_inicializar()
+        with loja_pg_connect() as conn:
+            rows = conn.execute('SELECT chave FROM cnb_integracoes_credenciais').fetchall()
+        for row in rows:
+            if row['chave'] in fontes:
+                fontes[row['chave']] = 'Painel (cifrado)'
+    return fontes
+
+
+def loja_integracao_salvar(chave, valor, administrador):
+    if chave not in _CNB_CREDENCIAS_ENV:
+        raise ValueError('Campo de integração não permitido.')
+    if not loja_pg_ativa():
+        raise RuntimeError('Configure CNB_LOJA_DATABASE_URL no Render.')
+    cifrador = loja_cifrador()
+    conteudo_cifrado = cifrador.encrypt(valor.encode('utf-8')).decode('ascii')
+    loja_inicializar()
+    with loja_pg_connect() as conn:
+        conn.execute('''INSERT INTO cnb_integracoes_credenciais
+            (chave,conteudo_cifrado,atualizado_por) VALUES (%s,%s,%s)
+            ON CONFLICT (chave) DO UPDATE SET conteudo_cifrado=EXCLUDED.conteudo_cifrado,
+                atualizado_por=EXCLUDED.atualizado_por, atualizado_em=NOW()''',
+            (chave, conteudo_cifrado, administrador[:160]))
+
+
+def loja_integracao_apagar(chave):
+    if chave not in _CNB_CREDENCIAS_ENV:
+        raise ValueError('Campo de integração não permitido.')
+    loja_inicializar()
+    with loja_pg_connect() as conn:
+        conn.execute('DELETE FROM cnb_integracoes_credenciais WHERE chave=%s', (chave,))
+
+
+def loja_integracao_validar(chave, valor):
+    '''Recusa credenciais malformadas sem expor conteúdo em erros de UI.'''
+    if len(valor) > (24000 if chave == 'google_service_account_json' else 1300):
+        raise ValueError('Credencial maior que o tamanho permitido.')
+    if chave == 'google_service_account_json':
+        try:
+            info = _loja_json.loads(valor)
+        except (ValueError, TypeError):
+            raise ValueError('Informe o JSON de conta de serviço Google válido.')
+        if not isinstance(info, dict) or info.get('type') != 'service_account':
+            raise ValueError('O Google Drive exige JSON de uma conta de serviço.')
+        for campo in ('private_key', 'client_email', 'token_uri', 'project_id'):
+            if not isinstance(info.get(campo), str) or not info[campo]:
+                raise ValueError('JSON Google sem campos obrigatórios.')
+        if info['token_uri'] != 'https://oauth2.googleapis.com/token':
+            raise ValueError('URL de token Google inesperada.')
+        # A biblioteca também verifica o formato da chave privada.
+        from google.oauth2 import service_account
+        try:
+            service_account.Credentials.from_service_account_info(
+                info, scopes=['https://www.googleapis.com/auth/drive'])
+        except Exception as exc:
+            raise ValueError('Chave privada da conta de serviço inválida.') from exc
+    elif chave == 'loja_base_url':
+        from urllib.parse import urlsplit
+        u = urlsplit(valor)
+        if (u.scheme != 'https' or not u.hostname or u.username or u.password
+                or u.query or u.fragment or u.path not in ('', '/')):
+            raise ValueError('Informe a URL pública HTTPS do site, sem caminho extra.')
+        if u.hostname in ('localhost', '127.0.0.1'):
+            raise ValueError('A URL dos Webhooks deve ser pública.')
+    elif chave == 'mercadopago_public_key':
+        if not (5 <= len(valor) <= 400) or any(c.isspace() for c in valor):
+            raise ValueError('Public Key inválida.')
+    else:
+        if not (10 <= len(valor) <= 1300) or any(c.isspace() for c in valor):
+            raise ValueError('Credencial inválida ou contém espaços.')
+
+
+def loja_integracao_teste_mp():
+    import requests
+    token = loja_integracao_credenciais().get('mercadopago_access_token', '')
+    if not token:
+        return False, 'Access Token não configurado.'
+    try:
+        r = requests.get('https://api.mercadolibre.com/users/me',
+                         headers={'Authorization': 'Bearer ' + token}, timeout=12)
+        if r.ok:
+            return True, 'Autenticação aceita pelo Mercado Pago. Isso não confirma a habilitação do Pix.'
+        return False, 'Mercado Pago recusou a autenticação (HTTP ' + str(r.status_code) + ').'
+    except requests.RequestException:
+        return False, 'Sem conexão com o Mercado Pago. Tente novamente.'
+
+
+def loja_integracao_teste_drive():
+    info = loja_integracao_credenciais().get('google_service_account_json', '')
+    if not info:
+        return False, 'JSON Google Drive não configurado.'
+    try:
+        sessao = loja_google_autorizada()
+        r = sessao.get('https://www.googleapis.com/drive/v3/files',
+                       params={'fields': 'nextPageToken', 'pageSize': 1}, timeout=16)
+        if r.ok:
+            return True, 'Google Drive autenticado. Teste o acesso ao instalador no cadastro do produto.'
+        return False, 'Google Drive recusou o acesso (HTTP ' + str(r.status_code) + ').'
+    except Exception:
+        return False, 'Não foi possível autenticar no Google Drive.'
+
+def loja_produtos_listar(publicado=False, limite=None):
+    if not loja_pg_ativa():
+        with conectar_banco() as c:
+            filtro = 'WHERE publicado=1' if publicado else ''
+            sql = f'SELECT * FROM produtos_digitais {filtro} ORDER BY id DESC'
+            if limite: sql += f' LIMIT {int(limite)}'
+            return c.execute(sql).fetchall()
+    loja_inicializar()
+    with loja_pg_connect() as c:
+        filtro = 'WHERE publicado=1' if publicado else ''
+        sql = f'SELECT * FROM cnb_pix_produtos {filtro} ORDER BY id DESC'
+        if limite: sql += f' LIMIT {int(limite)}'
+        return c.execute(sql).fetchall()
+
+
+def loja_produto_get(pid, publicado=False):
+    if not loja_pg_ativa():
+        with conectar_banco() as c:
+            return c.execute('SELECT * FROM produtos_digitais WHERE id=?' + (' AND publicado=1' if publicado else ''), (pid,)).fetchone()
+    loja_inicializar()
+    with loja_pg_connect() as c:
+        return c.execute('SELECT * FROM cnb_pix_produtos WHERE id=%s' + (' AND publicado=1' if publicado else ''), (pid,)).fetchone()
+
+
+def loja_link_drive(file_id):
+    return 'https://drive.google.com/file/d/' + _loja_quote(file_id, safe='') + '/view'
+
+
+def loja_validar_drive_id(valor):
+    valor = (valor or '').strip()
+    achado = re.fullmatch(r'https://drive\.google\.com/file/d/([\w-]{12,})/(?:view.*)?', valor)
+    if achado:
+        valor = achado.group(1)
+    if valor and not re.fullmatch(r'[A-Za-z0-9_-]{12,120}', valor):
+        raise ValueError('Informe somente o ID do arquivo no Drive ou seu link /file/d/ID/view.')
+    return valor
+
+
+def loja_cpf_valido(cpf):
+    """Validação local simples, sem armazenar o documento no banco da CNB."""
+    if not re.fullmatch(r'\d{11}', cpf or '') or cpf == cpf[0]*11:
+        return False
+    for tamanho in (9, 10):
+        soma = sum(int(d) * peso for d, peso in zip(cpf[:tamanho],range(tamanho+1,1,-1)))
+        resto=(soma * 10) % 11
+        if resto == 10: resto = 0
+        if resto != int(cpf[tamanho]):
+            return False
+    return True
+
+
+def loja_validar_capa(url):
+    url = (url or '').strip()
+    if url and (not url.startswith('https://') or len(url) > 2000 or any(c in url for c in '\r\n\x00')):
+        raise ValueError('A capa deve ter uma URL https pública válida.')
+    return url
+
+
+def loja_gravar_produto_pg(produto=None):
+    verificar_csrf_produtos()
+    if not loja_pg_ativa():
+        abort(503)
+    nome = request.form.get('nome', '').strip()[:140]
+    resumo = request.form.get('resumo', '').strip()[:450]
+    if not nome or not resumo:
+        flash('Nome e resumo são obrigatórios.'); return redirect(request.path)
+    plataforma = request.form.get('plataforma', 'Windows')
+    licenca = request.form.get('licenca', 'permanente')
+    if plataforma not in {'Windows','Web','Android','Multiplataforma'} or licenca not in {'sob_consulta','permanente','mensal','anual'}:
+        flash('Seleção inválida.'); return redirect(request.path)
+    try:
+        imagem = loja_validar_capa(request.form.get('imagem_url', ''))
+        drive_id = loja_validar_drive_id(request.form.get('drive_file_id', ''))
+        preco_txt = request.form.get('preco','').strip()
+        preco = None
+        if preco_txt:
+            dec = _LojaDecimal(preco_txt.replace('.','').replace(',','.') if ',' in preco_txt else preco_txt)
+            if not dec.is_finite() or dec < 0 or dec > 999999 or dec.as_tuple().exponent < -2:
+                raise ValueError('Preço inválido: use 299,90.')
+            preco = int(dec * 100)
+        ativo = 1 if request.form.get('pix_ativo') else 0
+        if ativo and (not drive_id or not preco or preco < 100 or not loja_pronta_para_pix()):
+            raise ValueError('Pix exige preço de pelo menos R$ 1,00, ID do Drive e todas as integrações configuradas.')
+        if ativo and not loja_drive_pode_compartilhar(drive_id):
+            raise ValueError('O Google Drive ainda não autoriza esta integração a compartilhar esse arquivo. Corrija antes de ativar o Pix.')
+    except Exception as e:
+        # A exceção pode ser um erro temporário da API Drive: nunca ativa Pix sem checagem.
+        flash('Produto não salvo: ' + str(e)[:180]); return redirect(request.path)
+    distribuicao = 'privado'  # Em modo PostgreSQL o instalador fica sempre no Drive restrito.
+    publicado = 1 if request.form.get('publicado') else 0
+    desc = request.form.get('descricao', '').strip()[:8000]
+    versao = request.form.get('versao', '').strip()[:50]
+    agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    loja_inicializar()
+    with loja_pg_connect() as c:
+        dados = (nome, resumo, desc, versao, plataforma, licenca, preco, imagem, drive_id,
+                 ativo, distribuicao, publicado, agora)
+        if produto:
+            c.execute('''UPDATE cnb_pix_produtos SET nome=%s,resumo=%s,descricao=%s,versao=%s,
+                plataforma=%s,licenca=%s,preco_centavos=%s,imagem=%s,drive_file_id=%s,
+                pix_ativo=%s,distribuicao=%s,publicado=%s,atualizado_em=%s WHERE id=%s''', (*dados, produto['id']))
+        else:
+            c.execute('''INSERT INTO cnb_pix_produtos (nome,resumo,descricao,versao,plataforma,licenca,
+                preco_centavos,imagem,drive_file_id,pix_ativo,distribuicao,publicado,criado_em,atualizado_em)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''', (*dados, agora))
+    flash('Produto salvo no banco persistente da loja.'); return redirect(url_for('admin_produtos'))
+
+
+def loja_google_autorizada():
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import AuthorizedSession
+    try:
+        info = _loja_json.loads(loja_integracao_credenciais().get('google_service_account_json', ''))
+        cred = service_account.Credentials.from_service_account_info(
+            info, scopes=['https://www.googleapis.com/auth/drive'])
+    except Exception as e:
+        raise RuntimeError('Credenciais Google Drive inválidas') from e
+    return AuthorizedSession(cred)
+
+
+def loja_drive_pode_compartilhar(file_id):
+    if not loja_integracao_credenciais().get('google_service_account_json'):
+        return False
+    s = loja_google_autorizada()
+    r = s.get('https://www.googleapis.com/drive/v3/files/' + file_id,
+              params={'fields':'id,name,capabilities(canShare)', 'supportsAllDrives':'true'},timeout=20)
+    if not r.ok or not r.json().get('capabilities',{}).get('canShare'):
+        return False
+    # Impede cobrar por um link que já está público para qualquer pessoa.
+    pagina=None
+    while True:
+        params={'fields':'nextPageToken,permissions(id,type,role)', 'pageSize':100,
+                'supportsAllDrives':'true'}
+        if pagina: params['pageToken']=pagina
+        perms=s.get('https://www.googleapis.com/drive/v3/files/' + file_id + '/permissions',
+                    params=params,timeout=20)
+        if not perms.ok: return False
+        if any(p.get('type')=='anyone' for p in perms.json().get('permissions',[])):
+            return False
+        pagina=perms.json().get('nextPageToken')
+        if not pagina: break
+    return True
+
+
+def loja_drive_compartilhar(file_id, email):
+    if not loja_drive_pode_compartilhar(file_id):
+        raise RuntimeError('Sem autorização para compartilhar o arquivo do Google Drive')
+    s = loja_google_autorizada()
+    r = s.post('https://www.googleapis.com/drive/v3/files/' + file_id + '/permissions',
+               params={'supportsAllDrives':'true','sendNotificationEmail':'true','fields':'id'},
+               json={'type':'user','role':'reader','emailAddress':email}, timeout=25)
+    if not r.ok:
+        raise RuntimeError('Falha na autorização do comprador no Google Drive: HTTP ' + str(r.status_code))
+    return r.json().get('id')
+
+
+def loja_mp_headers(idempotency=None):
+    headers={'Authorization':'Bearer '+loja_integracao_credenciais().get('mercadopago_access_token', ''),'Content-Type':'application/json'}
+    if idempotency: headers['X-Idempotency-Key']=idempotency
+    return headers
+
+
+def loja_mp_criar_pix(pedido_id, nome_produto, centavos, nome, email, cpf):
+    import requests
+    base = loja_integracao_credenciais().get('loja_base_url','').strip().rstrip('/')
+    if not base:
+        host_render=os.getenv('RENDER_EXTERNAL_HOSTNAME','').strip()
+        base = ('https://'+host_render) if host_render else request.url_root.rstrip('/')
+    if not base.startswith('https://') and EM_RENDER:
+        raise RuntimeError('HTTPS obrigatório para receber a confirmação Pix')
+    body={
+        'transaction_amount': float(_LojaDecimal(centavos)/100),
+        'description': nome_produto[:120],
+        'payment_method_id': 'pix',
+        'external_reference': pedido_id,
+        'payer': {
+            'email': email,
+            'first_name': nome.strip().split(' ')[0][:60],
+            'last_name': ' '.join(nome.strip().split(' ')[1:])[:60] or 'Cliente',
+            'identification': {'type':'CPF','number':cpf}
+        },
+        'notification_url': base + '/webhooks/cnb-mercadopago'
+    }
+    r = requests.post('https://api.mercadopago.com/v1/payments',json=body,
+                      headers=loja_mp_headers(pedido_id),timeout=25)
+    if r.status_code not in (200,201):
+        raise RuntimeError('O Mercado Pago não conseguiu gerar o Pix (HTTP '+str(r.status_code)+').')
+    data=r.json()
+    tx=data.get('point_of_interaction',{}).get('transaction_data',{})
+    if not data.get('id') or not tx.get('qr_code'):
+        raise RuntimeError('O Mercado Pago não devolveu um QR Code Pix válido.')
+    return data
+
+
+def loja_mp_consultar(payment_id):
+    import requests
+    if not re.fullmatch(r'\d{1,25}',str(payment_id)):
+        raise ValueError('Identificador de pagamento inválido')
+    r=requests.get('https://api.mercadopago.com/v1/payments/'+str(payment_id),
+                   headers=loja_mp_headers(), timeout=15)
+    if not r.ok:
+        raise RuntimeError('Falha ao consultar pagamento no Mercado Pago.')
+    return r.json()
+
+
+def loja_confirmar_pagamento(payment_id):
+    """Nunca libera pelo status enviado pelo navegador ou webhook: consulta API do MP."""
+    if not loja_pronta_para_pix():
+        return False
+    data = loja_mp_consultar(payment_id)
+    codigo = str(data.get('id',''))
+    referencia = str(data.get('external_reference',''))
+    loja_inicializar()
+    with loja_pg_connect() as c:
+        pedido=c.execute('SELECT * FROM cnb_pix_pedidos WHERE id=%s',(referencia,)).fetchone()
+        if not pedido or not pedido['mp_payment_id'] or str(pedido['mp_payment_id'])!=codigo:
+            return False
+        if (data.get('status')!='approved' or data.get('payment_method_id')!='pix'
+                or data.get('currency_id')!='BRL' or data.get('live_mode') is False
+                and os.getenv('CNB_LOJA_ACEITAR_TESTES','0')!='1'):
+            return False
+        valor = _LojaDecimal(str(data.get('transaction_amount','0')))
+        if valor != _LojaDecimal(pedido['preco_centavos']) / 100:
+            return False
+        c.execute('''UPDATE cnb_pix_pedidos SET status='approved', atualizado_em=NOW()
+                     WHERE id=%s AND status<>'approved' ''',(referencia,))
+    loja_tentar_entrega(referencia)
+    return True
+
+
+def loja_tentar_entrega(pedido_id):
+    loja_inicializar()
+    with loja_pg_connect() as c:
+        pedido=c.execute('''UPDATE cnb_pix_pedidos SET drive_status='processando', atualizado_em=NOW()
+              WHERE id=%s AND status='approved' AND drive_status IN ('pendente','erro')
+              RETURNING id,drive_file_id,cliente_email''',(pedido_id,)).fetchone()
+    if not pedido:
+        return False
+    try:
+        loja_drive_compartilhar(pedido['drive_file_id'],pedido['cliente_email'])
+    except Exception as exc:
+        print('[CNB LOJA] Pagamento confirmado, entrega pendente: ',type(exc).__name__)
+        with loja_pg_connect() as c:
+            c.execute('''UPDATE cnb_pix_pedidos SET drive_status='erro', atualizado_em=NOW()
+                WHERE id=%s AND drive_status='processando' ''',(pedido_id,))
+        return False
+    with loja_pg_connect() as c:
+        c.execute('''UPDATE cnb_pix_pedidos SET drive_status='liberado',atualizado_em=NOW()
+                  WHERE id=%s AND drive_status='processando' ''',(pedido_id,))
+    return True
+
+
+def loja_validar_webhook():
+    segredo = loja_integracao_credenciais().get('mercadopago_webhook_secret', '')
+    if not segredo:
+        return None
+    sig=request.headers.get('x-signature','')
+    request_id=request.headers.get('x-request-id','')
+    partes={}
+    for p in sig.split(','):
+        chave,_,valor=p.strip().partition('=')
+        partes[chave]=valor
+    ts,v1=partes.get('ts',''),partes.get('v1','')
+    mid=request.args.get('data.id','') or request.args.get('id','')
+    if not (ts.isdigit() and re.fullmatch('[0-9a-fA-F]{64}',v1 or '') and request_id and re.fullmatch(r'\d{1,25}',mid)):
+        return None
+    manifest=f'id:{mid.lower()};request-id:{request_id};ts:{ts};'
+    esperado=hmac.new(segredo.encode(),manifest.encode(),_loja_hashlib.sha256).hexdigest()
+    return mid if hmac.compare_digest(esperado,v1.lower()) else None
+
+
+@app.route('/webhooks/cnb-mercadopago',methods=['POST'])
+def loja_webhook_mercadopago():
+    mid=loja_validar_webhook()
+    if not mid:
+        abort(401)
+    try:
+        loja_confirmar_pagamento(mid)
+    except Exception as e:
+        print('[CNB LOJA] webhook temporariamente indisponível:',type(e).__name__)
+        return ('Falha temporária',503)
+    return ('OK',200)
+
+
+LOJA_TELA_PIX = '''
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pagamento Pix | CNB TECH SOLUTION</title>
+<style>
+:root{--f:{{cor_fundo}};--bar:{{cor_navbar}};--card:{{cor_card}};--borda:{{cor_card_borda}};--txt:{{cor_texto}};--title:{{cor_titulo}};--accent:{{cor_destaque}}}
+*{box-sizing:border-box}body{margin:0;background:var(--f);color:var(--title);font-family:'Segoe UI',sans-serif}
+header{background:var(--bar);border-bottom:1px solid var(--borda);padding:22px 5%}a{color:var(--accent)}main{max-width:670px;margin:40px auto;padding:16px}
+article{background:var(--card);border:1px solid var(--borda);border-radius:15px;padding:28px}.muted{color:var(--txt);line-height:1.65}.qr{display:block;width:min(260px,100%);margin:18px auto;border:8px solid white;border-radius:8px}
+textarea{display:block;width:100%;margin:12px 0;background:var(--f);color:var(--title);padding:12px;resize:vertical;border:1px solid var(--borda);border-radius:7px}
+.btn{display:inline-block;background:var(--accent);color:var(--f);padding:13px 18px;text-decoration:none;font-weight:800;border:0;border-radius:7px;cursor:pointer}
+[hidden]{display:none!important}
+</style></head><body><header><a href="/produtos">← Voltar aos produtos</a></header><main><article>
+<h1>Pagamento Pix</h1><p class="muted">{{ pedido.produto_nome }} • {{ valor }}<br>Comprador: {{ pedido.cliente_email }}</p>
+<div id="pendente">
+  <p><strong>Aguardando confirmação do Pix...</strong></p>
+  {% if pedido.pix_imagem %}<img class="qr" src="data:image/png;base64,{{pedido.pix_imagem}}" alt="QR Code Pix">{% endif %}
+  <label>Pix Copia e Cola</label><textarea readonly rows="4" id="codigo">{{pedido.pix_qr}}</textarea>
+  <button type="button" class="btn" onclick="navigator.clipboard.writeText(document.getElementById('codigo').value)">Copiar código Pix</button>
+</div>
+<div id="liberado" hidden><h2>Pagamento aprovado!</h2><p class="muted">O acesso foi autorizado no Google Drive para o e-mail informado. Entre no Drive com essa conta.</p>
+<a class="btn" href="{{url_for('loja_baixar',pedido_id=pedido.id)}}">Abrir download no Google Drive</a></div>
+<div id="entrega" hidden><h2>Pagamento aprovado</h2><p class="muted">Estamos finalizando a liberação no Google Drive. Se demorar, fale com a CNB Tech Solution informando o pedido {{pedido.id}}.</p></div>
+<p class="muted" id="aviso">A confirmação pode levar alguns instantes. Não feche esta página até o pagamento ser confirmado.</p>
+</article></main>
+<script>
+const statusUrl={{url_for('loja_status',pedido_id=pedido.id)|tojson}};
+async function atualizar(){try{const r=await fetch(statusUrl,{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const data=await r.json();
+const liberado=data.status==='approved' && data.drive_status==='liberado';const pago=data.status==='approved';
+document.getElementById('pendente').hidden=pago;document.getElementById('liberado').hidden=!liberado;
+document.getElementById('entrega').hidden=!pago||liberado;
+if(liberado)document.getElementById('aviso').textContent='Seu acesso está disponível.';
+}catch(e){}} atualizar();setInterval(atualizar,7000);
+</script></body></html>
+'''
+
+
+def loja_pedido_privado(pedido_id):
+    if pedido_id not in session.get('cnb_pix_pedidos',[]):
+        abort(403)
+    loja_inicializar()
+    with loja_pg_connect() as c:
+        p=c.execute('SELECT * FROM cnb_pix_pedidos WHERE id=%s',(pedido_id,)).fetchone()
+    if not p: abort(404)
+    return p
+
+
+@app.route('/produtos/<int:produto_id>/comprar',methods=['POST'])
+def loja_comprar_pix(produto_id):
+    verificar_csrf_produtos()
+    if not loja_pronta_para_pix():
+        abort(503, description='Loja Pix ainda não configurada.')
+    produto=loja_produto_get(produto_id,True)
+    if not produto or not produto['pix_ativo'] or not produto['drive_file_id'] or not produto['preco_centavos']:
+        abort(404)
+    nome=request.form.get('nome','').strip()[:120]
+    email=request.form.get('email','').strip().lower()[:160]
+    cpf=re.sub(r'\D','',request.form.get('cpf',''))
+    if not (len(nome)>=2 and re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+',email) and loja_cpf_valido(cpf)):
+        flash('Preencha nome, e-mail e CPF válido (11 dígitos).')
+        return redirect(url_for('produto_detalhe',produto_id=produto_id))
+    # Freia cliques duplicados e criação acidental de cobranças na mesma sessão.
+    agora_sessao=_loja_time.time()
+    if agora_sessao - float(session.get('cnb_pix_ultima_compra',0)) < 30:
+        abort(429, description='Aguarde 30 segundos antes de gerar outro Pix.')
+    session['cnb_pix_ultima_compra']=agora_sessao
+    pedido_id=str(_loja_uuid.uuid4())
+    loja_inicializar()
+    with loja_pg_connect() as c:
+        c.execute('''INSERT INTO cnb_pix_pedidos (id,produto_id,produto_nome,drive_file_id,cliente_nome,cliente_email,preco_centavos)
+              VALUES (%s,%s,%s,%s,%s,%s,%s)''',
+              (pedido_id,produto_id,produto['nome'],produto['drive_file_id'],nome,email,produto['preco_centavos']))
+    try:
+        mp=loja_mp_criar_pix(pedido_id,produto['nome'],produto['preco_centavos'],nome,email,cpf)
+        tx=mp.get('point_of_interaction',{}).get('transaction_data',{})
+        with loja_pg_connect() as c:
+            c.execute('''UPDATE cnb_pix_pedidos SET mp_payment_id=%s, status='pending',pix_qr=%s,
+                 pix_imagem=%s,atualizado_em=NOW() WHERE id=%s''',
+                 (str(mp['id']),tx.get('qr_code',''),tx.get('qr_code_base64',''),pedido_id))
+    except Exception as e:
+        print('[CNB LOJA] não foi possível iniciar Pix:',type(e).__name__)
+        with loja_pg_connect() as c:
+            c.execute("UPDATE cnb_pix_pedidos SET status='erro',atualizado_em=NOW() WHERE id=%s",(pedido_id,))
+        abort(502,description='Não foi possível gerar a cobrança. Tente novamente.')
+    pedidos=session.get('cnb_pix_pedidos',[])
+    session['cnb_pix_pedidos']=(pedidos+[pedido_id])[-8:]
+    return redirect(url_for('loja_pagina_pedido',pedido_id=pedido_id))
+
+
+@app.route('/loja/pedido/<pedido_id>')
+def loja_pagina_pedido(pedido_id):
+    p=loja_pedido_privado(pedido_id)
+    resp=make_response(render_template_string(LOJA_TELA_PIX,pedido=p,
+        valor=preco_produto_br(p['preco_centavos']),**configuracao_visual_atual()))
+    resp.headers['Cache-Control']='no-store'
+    return resp
+
+
+@app.route('/loja/pedido/<pedido_id>/status')
+def loja_status(pedido_id):
+    p=loja_pedido_privado(pedido_id)
+    if p['status']=='pending' and p['mp_payment_id']:
+        # Reconciliar no máximo a cada 15s por pagamento, evitando consultas excessivas.
+        with _LOJA_STATUS_LOCK:
+            agora=_loja_time.monotonic()
+            ultimo=_LOJA_STATUS_ULTIMA_CONSULTA.get(pedido_id,0)
+            consultar=agora-ultimo >= 15
+            if consultar:
+                if len(_LOJA_STATUS_ULTIMA_CONSULTA) > 2000:
+                    _LOJA_STATUS_ULTIMA_CONSULTA.clear()
+                _LOJA_STATUS_ULTIMA_CONSULTA[pedido_id]=agora
+        if consultar:
+            try:
+                loja_confirmar_pagamento(p['mp_payment_id'])
+                p=loja_pedido_privado(pedido_id)
+            except Exception: pass
+    return _loja_jsonify(status=p['status'],drive_status=p['drive_status']),200,{'Cache-Control':'no-store'}
+
+
+@app.route('/loja/pedido/<pedido_id>/baixar')
+def loja_baixar(pedido_id):
+    p=loja_pedido_privado(pedido_id)
+    if p['status']!='approved' or p['drive_status']!='liberado':
+        abort(403)
+    return redirect(loja_link_drive(p['drive_file_id']),code=303)
+
+
+@app.route('/admin/vendas-pix')
+@login_obrigatorio
+def admin_vendas_pix():
+    if not loja_pg_ativa():
+        return admin_shell('Vendas Pix','<h1>Vendas Pix</h1><p class="alerta">Configure CNB_LOJA_DATABASE_URL para habilitar banco persistente.</p>')
+    loja_inicializar()
+    with loja_pg_connect() as c:
+        pedidos=c.execute('SELECT id,produto_nome,cliente_nome,cliente_email,preco_centavos,mp_payment_id,status,drive_status,criado_em FROM cnb_pix_pedidos ORDER BY criado_em DESC LIMIT 150').fetchall()
+    from html import escape
+    linhas=''
+    for p in pedidos:
+        a=escape(p['id']); nome=escape(p['cliente_nome']); email=escape(p['cliente_email']);prod=escape(p['produto_nome'])
+        linhas+=f'''<tr><td>{prod}</td><td>{nome}<br><small>{email}</small></td><td>{preco_produto_br(p['preco_centavos'])}</td>
+        <td>{escape(p['status'])}</td><td>{escape(p['drive_status'])}</td><td>{escape(str(p['criado_em']))}</td>
+        <td><form method="post" action="/admin/vendas-pix/{a}/reprocessar"><input type="hidden" name="csrf_token" value="{token_csrf_produtos()}"><button class="btn btn-sec btn-mini" type="submit">Verificar e liberar</button></form></td></tr>'''
+    return admin_shell('Vendas Pix','<h1>Vendas Pix</h1><p class="muted">O botão verifica o pagamento diretamente no Mercado Pago e tenta autorizar o acesso no Drive.</p><div class="bloco" style="overflow-x:auto"><table class="tabela"><tr><th>Produto</th><th>Cliente</th><th>Valor</th><th>Pix</th><th>Drive</th><th>Data</th><th>Ação</th></tr>'+ (linhas or '<tr><td colspan="7">Nenhuma venda registrada.</td></tr>')+'</table></div>')
+
+
+@app.route('/admin/vendas-pix/<pedido_id>/reprocessar',methods=['POST'])
+@login_obrigatorio
+def admin_venda_reprocessar(pedido_id):
+    verificar_csrf_produtos()
+    loja_inicializar()
+    with loja_pg_connect() as c:
+        p=c.execute('SELECT * FROM cnb_pix_pedidos WHERE id=%s',(pedido_id,)).fetchone()
+    if not p: abort(404)
+    if p['mp_payment_id']:
+        try:
+            loja_confirmar_pagamento(p['mp_payment_id'])
+            loja_tentar_entrega(pedido_id)
+            flash('Verificação solicitada. Confira o novo status na lista.')
+        except Exception:
+            flash('Não foi possível consultar o pagamento ou compartilhar no Drive. Revise a configuração.')
+    return redirect(url_for('admin_vendas_pix'))
+
+
+
+# ------------------- [CNB TECH V22] INTEGRAÇÕES APIs ------------------
+# Somente o usuário master tem permissão de editar as credenciais.
+LOJA_INTEGRACOES_CAMPOS = (
+    ('mercadopago_access_token', 'Mercado Pago · Access Token', 'password',
+     'Token de acesso da aplicação Mercado Pago — privado e necessário para gerar Pix.'),
+    ('mercadopago_public_key', 'Mercado Pago · Public Key', 'password',
+     'Opcional nesta loja server-side; reservada para checkout com SDK no navegador.'),
+    ('mercadopago_webhook_secret', 'Mercado Pago · Webhook Secret', 'password',
+     'Assinatura secreta dos Webhooks — valida notificações de pagamento.'),
+    ('google_service_account_json', 'Google Drive · JSON de conta de serviço', 'textarea',
+     'Credenciais de conta de serviço do Google Cloud com API Drive habilitada.'),
+    ('loja_base_url', 'Site · URL pública HTTPS', 'text',
+     'Endereço do site publicado: será usado na URL de notificações Pix.'),
+)
+
+
+def loja_integracoes_admin_entrada():
+    if session.get('admin_perfil') != 'master':
+        abort(403, description='Somente o Administrador Master pode configurar APIs.')
+
+
+@app.route('/admin/integracoes-apis', methods=['GET', 'POST'])
+@login_obrigatorio
+def admin_integracoes_apis():
+    loja_integracoes_admin_entrada()
+    from html import escape
+    if request.method == 'POST':
+        verificar_csrf_produtos()
+        if not loja_pg_ativa() or not os.getenv('CNB_INTEGRATIONS_MASTER_KEY','').strip():
+            flash('Configure primeiro CNB_LOJA_DATABASE_URL e CNB_INTEGRATIONS_MASTER_KEY no Render.')
+            return redirect(url_for('admin_integracoes_apis'))
+        acao = request.form.get('acao', '')
+        try:
+            if acao == 'salvar':
+                informados = [(chave, request.form.get(chave, '').strip())
+                              for chave in _CNB_CREDENCIAS_ENV]
+                # Campos vazios preservam o valor já salvo; não fazem "reset".
+                informados = [(chave, valor) for chave, valor in informados if valor]
+                for chave, valor in informados:
+                    loja_integracao_validar(chave, valor)
+                for chave, valor in informados:
+                    loja_integracao_salvar(chave, valor, session.get('admin_email', 'master'))
+                flash('Configuração salva com segurança.' if informados else 'Nada alterado. Preencha apenas os campos que deseja modificar.')
+            elif acao == 'apagar':
+                campo = request.form.get('campo', '')
+                loja_integracao_apagar(campo)
+                flash('Credencial retirada do painel. Se houver valor no Render, ele voltará a ser usado.')
+            elif acao == 'teste_mp':
+                ok, mensagem = loja_integracao_teste_mp()
+                flash(('✓ ' if ok else 'Atenção: ') + mensagem)
+            elif acao == 'teste_drive':
+                ok, mensagem = loja_integracao_teste_drive()
+                flash(('✓ ' if ok else 'Atenção: ') + mensagem)
+            else:
+                abort(400)
+        except (ValueError, RuntimeError) as e:
+            # Mensagens contêm só motivo e NUNCA o valor digitado.
+            flash('Não foi possível salvar/testar: ' + str(e)[:160])
+        except Exception:
+            flash('Erro ao acessar o banco de integrações. Consulte o servidor.')
+        return redirect(url_for('admin_integracoes_apis'))
+
+    db_status = bool(loja_pg_ativa())
+    chave_status = bool(os.getenv('CNB_INTEGRATIONS_MASTER_KEY', '').strip())
+    pronto = False
+    fontes = {nome: 'Pendente' for nome in _CNB_CREDENCIAS_ENV}
+    erro = ''
+    try:
+        fontes = loja_integracao_origens()
+        pronto = loja_pronta_para_pix()
+    except Exception:
+        erro = 'Falha ao acessar as configurações. Confira a conexão PostgreSQL e a chave mestre.'
+    valor_base_publico = os.getenv('CNB_LOJA_BASE_URL', '').strip()
+    # Apenas o domínio público é exibido; segredos continuam sempre mascarados.
+    try:
+        valor_base_publico = loja_integracao_credenciais().get('loja_base_url', '')
+    except Exception:
+        pass
+    base = valor_base_publico.rstrip('/')
+    if not base:
+        host = os.getenv('RENDER_EXTERNAL_HOSTNAME','').strip()
+        if host: base = 'https://' + host
+    webhook = (base + '/webhooks/cnb-mercadopago') if base.startswith('https://') else 'Informe a URL HTTPS pública'
+    csrf = escape(token_csrf_produtos(), quote=True)
+    linhas = ''
+    for chave, nome, tipo, ajuda in LOJA_INTEGRACOES_CAMPOS:
+        fonte = fontes.get(chave, 'Pendente')
+        badge = 'Configurada — ' + fonte if fonte != 'Pendente' else 'Não cadastrada'
+        campo_input = ('<textarea class="campo" name="'+chave+'" rows="5" maxlength="24000" '
+                       'placeholder="Cole aqui o JSON completo; o valor atual não é exibido"></textarea>') if tipo == 'textarea' else (
+                       '<input class="campo" name="'+chave+'" type="'+tipo+'" maxlength="1300" '
+                       'autocomplete="off" placeholder="'+('Nova chave (valor atual oculto)' if tipo=='password' else 'https://seu-dominio.com.br')+'">')
+        # Limpeza é uma operação específica: nunca excluir ao deixar campo vazio.
+        apagar = ('<button class="btn btn-sec btn-mini" type="submit" name="acao" value="apagar" '
+                  'form="limpar_'+chave+'">Apagar configuração do painel</button>') if fonte == 'Painel (cifrado)' else ''
+        linhas += ('<section class="bloco" style="margin:12px 0;padding:16px">'
+                   '<label for="'+chave+'"><b>'+escape(nome)+'</b></label>'
+                   '<p class="muted" style="margin:6px 0">'+escape(ajuda)+'</p>'
+                   '<p class="muted" style="margin:4px 0">Estado: '+escape(badge)+'</p>'
+                   +campo_input+'</section>')
+        # Botões de exclusão são exibidos em formulários próprios APÓS o form principal.
+    estado = 'Pronto para configurar produtos Pix' if pronto else 'Ainda faltam credenciais / banco / permissões'
+    aviso = ('<p class="alerta">'+escape(erro)+'</p>') if erro else ''
+    bloqueio = '' if db_status and chave_status else (
+        '<p class="alerta">Para salvar chaves no painel, configure no Render: '
+        '<code>CNB_LOJA_DATABASE_URL</code> e <code>CNB_INTEGRATIONS_MASTER_KEY</code>. '
+        'Sem essas variáveis, não é possível armazenar com segurança.</p>')
+    form = ('<form method="post" autocomplete="off"><input type="hidden" name="csrf_token" value="'+csrf+'">'
+            +linhas+'<button class="btn" type="submit" name="acao" value="salvar" '
+            +('disabled' if not (db_status and chave_status) else '')+'>Salvar credenciais com segurança</button></form>')
+    botoes_apagar = ''
+    for chave, nome, _, _ in LOJA_INTEGRACOES_CAMPOS:
+        if fontes.get(chave) == 'Painel (cifrado)':
+            botoes_apagar += ('<form method="post" style="display:inline-block;margin:5px" '
+                'onsubmit="return confirm(\'Remover a credencial guardada no painel?\')">'
+                '<input type="hidden" name="csrf_token" value="'+csrf+'">'
+                '<input type="hidden" name="campo" value="'+chave+'">'
+                '<button class="btn btn-sec btn-mini" name="acao" value="apagar" '
+                'type="submit">Remover '+escape(nome)+'</button></form>')
+    botoes = ('''<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px">
+        <form method="post"><input type="hidden" name="csrf_token" value="'''+csrf+'''">
+            <button class="btn btn-sec" name="acao" value="teste_mp">Testar acesso ao Mercado Pago</button></form>
+        <form method="post"><input type="hidden" name="csrf_token" value="'''+csrf+'''">
+            <button class="btn btn-sec" name="acao" value="teste_drive">Testar acesso ao Google Drive</button></form>
+        </div>''')
+    html = ('<h1>Integrações APIs · Pix e Google Drive</h1>'
+            '<p class="muted">Cadastro manual das chaves. Somente Administrador Master. '
+            'Os valores secretos nunca reaparecem na tela e ficam cifrados no PostgreSQL.</p>'
+            '<div class="bloco"><b>Estado da loja: '+escape(estado)+'</b><br>'
+            '<span class="muted">PostgreSQL: '+('configurado' if db_status else 'pendente')
+            +' · Chave mestre: '+('configurada' if chave_status else 'pendente')
+            +'</span><p class="muted">URL do Webhook a cadastrar no Mercado Pago: '
+            '<code style="overflow-wrap:anywhere">'+escape(webhook)+'</code></p></div>'
+            +aviso+bloqueio+form+botoes_apagar+botoes
+            +'<p class="muted" style="margin-top:20px">Chaves em branco não são alteradas. '
+            'A Public Key é opcional nesta implementação; o Access Token, Webhook Secret e JSON Google '
+            'são necessários. Testar a API não movimenta dinheiro e não prova acesso a todos os arquivos.</p>')
+    resp = make_response(admin_shell('Integrações APIs', html))
+    resp.headers['Cache-Control'] = 'no-store, private'
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    return resp
 
 @app.route('/admin/administradores', methods=['GET','POST'])
 @login_obrigatorio
